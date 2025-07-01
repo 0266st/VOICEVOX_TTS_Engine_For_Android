@@ -11,7 +11,7 @@ activityCompose = "1.8.0"
 composeBom = "2024.09.00"
 media3CommonKtx = "1.5.1"
 onnxruntimeAndroid = "1.14.0"
-voicevox = "0.16.0-preview.1"
+voicevox = "0.15.0-preview.16"
 
 
 [libraries]

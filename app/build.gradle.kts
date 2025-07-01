@@ -1,5 +1,4 @@
 
-import java.io.BufferedOutputStream
 import java.io.FileOutputStream
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -11,6 +10,10 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+repositories {
+    mavenLocal()
 }
 
 android {
@@ -55,7 +58,7 @@ fun ZipInputStream.forEach(fn: (ZipEntry)->Unit){
     }
 }
 
-tasks.create("downloadVoicevox") {
+tasks.register("downloadVoicevox") {
     val client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()
     val voicevoxZip = uri("https://github.com/VOICEVOX/voicevox_core/releases/download/${project.libs.voicevox.core.get().version}/java_packages.zip")
     val req = HttpRequest.newBuilder().GET().uri(voicevoxZip).build()

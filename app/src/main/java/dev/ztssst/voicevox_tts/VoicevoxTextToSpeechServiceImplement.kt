@@ -56,6 +56,7 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     private fun unzipJtalk(jtalk: File) {
+        // jtalk変数はzipファイルを握っています。以下にこのファイルをそのディレクトリに解凍するコードを書いてください。
         val destDir = jtalk.parentFile
         Log.d(TAG, "destDir = $destDir")
         try {
@@ -84,7 +85,7 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onIsLanguageAvailable(lang: String, country: String, variant: String): Int {
-        Log.d("${TAG}->onIsLanguageAvailable", "onIsLanguageAvailable called with arguments: $lang, $country, ${if(variant.isBlank() || variant.isEmpty()) "null" else variant}")
+        Log.d("${TAG}->onIsLanguageAvailable", "onIsLanguageAvailable called with arguments: $lang, $country, $variant")
         // 言語が利用可能かどうかを返す
         if ("jpn" == lang) {
             Log.d("${TAG}->onLoadLanguage", "return TextToSpeech.LANG_AVAILABLE")
@@ -100,7 +101,7 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onLoadLanguage(lang: String, country: String, variant: String): Int {
-        Log.d("${TAG}->onLoadLanguage", "onLoadLanguage called with arguments: $lang, $country, ${if(variant.isBlank() || variant.isEmpty()) "null" else variant}")
+        Log.d("${TAG}->onLoadLanguage", "onLoadLanguage called with arguments: $lang, $country, $variant")
         // 言語データのロード処理
         if ("jpn" == lang) {
             Log.d("${TAG}->onLoadLanguage", "return TextToSpeech.LANG_AVAILABLE")
@@ -157,7 +158,7 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         country: String?,
         variant: String?
     ): String {
-        Log.d("${TAG}->onGetDefaultVoiceNameFor", "onGetDefaultVoiceNameFor called with arguments: $lang, $country, ${if(variant.isNullOrBlank() || variant.isBlank() || variant.isEmpty()) "null" else variant}")
+        Log.d("${TAG}->onGetDefaultVoiceNameFor", "onGetDefaultVoiceNameFor called with arguments: $lang, $country, $variant")
         return "冥鳴ひまり"
     }
 
