@@ -1,8 +1,5 @@
 # VOICEVOX TTS Engine for Android
 
-## 重要：このレポジトリは現在凍結中です。再開時期予定： VOICEVOX-COREの0.16.0-preview.2のRelease後。現在の最新リリースv1.0.0は動作するため、動かすことは可能です。
-## IMPORTANT: This repository is currently frozen. Planned reopening date: after release of 0.16.0-preview.2 of VOICEVOX-CORE. The current latest release v1.0.0 is working and can be run.
-
 **日本語**
 ## 説明
 このソフトウェアはAndroidの読み上げをVOICEVOXに置き換えるソフトウェアです。VOICEVOX COREのAndroid用AARファイルを使用しています。このソフトウェアはMITライセンスで提供されています。
