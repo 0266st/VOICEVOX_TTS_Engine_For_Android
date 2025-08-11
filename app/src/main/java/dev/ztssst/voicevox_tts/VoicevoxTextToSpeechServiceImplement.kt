@@ -16,8 +16,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
@@ -25,8 +23,6 @@ import java.util.zip.ZipInputStream
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     private lateinit var ttsService: VoicevoxTTSEngine
     private val TAG: String = "VoicevoxTextToSpeechService"
-    private val synthesisExecutor = Executors.newSingleThreadExecutor()
-    private val audioDataQueue = LinkedBlockingQueue<ByteArray>()
 
     override fun onCreate() {
         super.onCreate()
@@ -130,46 +126,21 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Log.d("${TAG}->onSynthesizeText", "onSynthesizeText called with arguments: $request, $callback")
+        Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
+        val audioData = this.ttsService.synthesis(request.charSequenceText.toString())
+        val maxBufferSize: Int = callback.maxBufferSize
+        // テキストを音声に変換する処理
+        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        // 音声合成処理を別スレッドで実行
-        synthesisExecutor.execute {
-            Log.d("${TAG}->onSynthesizeText", "Synthesizing text: ${request.charSequenceText}")
-            val audioData = this.ttsService.synthesis(request.charSequenceText.toString())
-            audioDataQueue.put(audioData) // 合成された音声データをキューに追加
-            Log.d("${TAG}->onSynthesizeText", "Synthesis complete, audio data added to queue.")
+        var offset = 0
+        while (offset < audioData.size) {
+            val bytesToSend = Math.min(maxBufferSize, audioData.size - offset)
+            val dataChunk = audioData.copyOfRange(offset, offset + bytesToSend)
+            callback.audioAvailable(dataChunk, 0, bytesToSend)
+            offset += bytesToSend
         }
 
-        // 音声再生処理（コールバックはメインスレッドまたはUIスレッドで処理される必要がある場合がある）
-        // ここでは onSynthesizeText が呼び出されたスレッドで再生処理を行う
-        try {
-            Log.d("${TAG}->onSynthesizeText", "Waiting for audio data from queue...")
-            // キューから音声データを取得（タイムアウト付きで待機）
-            // タイムアウトを設定することで、音声合成が非常に遅い場合に無限に待機するのを防ぐ
-            // 必要に応じてタイムアウト値を調整してください
-            val audioData = audioDataQueue.poll(60, TimeUnit.SECONDS)
-
-            if (audioData != null) {
-                Log.d("${TAG}->onSynthesizeText", "Audio data received from queue. Starting playback.")
-                val maxBufferSize: Int = callback.maxBufferSize
-                callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
-
-                var offset = 0
-                while (offset < audioData.size) {
-                    val bytesToSend = Math.min(maxBufferSize, audioData.size - offset)
-                    callback.audioAvailable(audioData, offset, bytesToSend)
-                    offset += bytesToSend
-                }
-                callback.done()
-                Log.d("${TAG}->onSynthesizeText", "Playback finished.")
-            } else {
-                Log.e("${TAG}->onSynthesizeText", "Timeout waiting for audio data or no data available.")
-                callback.error() // エラーを通知
-            }
-        } catch (e: InterruptedException) {
-            Log.e("${TAG}->onSynthesizeText", "Interrupted while waiting for audio data", e)
-            Thread.currentThread().interrupt() // 割り込みステータスを再設定
-            callback.error() // エラーを通知
-        }
+        callback.done()
     }
 
     override fun onIsValidVoiceName(voiceName: String?): Int {
