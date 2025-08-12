@@ -33,3 +33,8 @@ jobs:
       - name: Build With Gradle
         run: |
           ./gradlew assembleDebug
+      - name: Upload Artifacts
+        uses: actions/upload-artifacts@v4
+        with:
+          name: apk
+          path: app/build/intermediates/apk/debug/app-debug.apk
