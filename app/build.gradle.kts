@@ -1,10 +1,8 @@
 
-import java.io.FileOutputStream
+import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -50,25 +48,50 @@ android {
         compose = true
     }
 }
-fun ZipInputStream.forEach(fn: (ZipEntry)->Unit){
-    var entry = nextEntry
-    while (entry != null){
-        fn(entry)
-        entry = nextEntry
-    }
+// VOICEVOX CORE・VOICEVOX ONNX Runtime・音声モデル（VVM）を取得する。
+// バイナリはgitで管理せず、このタスクでダウンロードして所定の場所に置く。
+fun download(url: String, dest: File) {
+    if (dest.exists()) return
+    dest.parentFile.mkdirs()
+    println("Downloading $url ...")
+    val client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()
+    val tmp = File(dest.path + ".part")
+    val res = client.send(HttpRequest.newBuilder(URI(url)).GET().build(), HttpResponse.BodyHandlers.ofFile(tmp.toPath()))
+    check(res.statusCode() == 200) { "Failed to download $url: HTTP ${res.statusCode()}" }
+    tmp.renameTo(dest)
 }
 
 tasks.register("downloadVoicevox") {
-    val client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()
-    val voicevoxZip = uri("https://github.com/VOICEVOX/voicevox_core/releases/download/${project.libs.voicevox.core.get().version}/java_packages.zip")
-    val req = HttpRequest.newBuilder().GET().uri(voicevoxZip).build()
-    val res = client.send(req, HttpResponse.BodyHandlers.ofInputStream())
+    val coreVersion = libs.versions.voicevox.get()
+    val ortVersion = libs.versions.voicevoxOnnxruntime.get()
+    val vvmVersion = libs.versions.voicevoxVvm.get()
+    val downloadDir = layout.buildDirectory.dir("voicevox-downloads").get().asFile
+    val mavenLocalDir = File(System.getProperty("user.home"), ".m2/repository")
+    val jniLibsDir = file("src/main/jniLibs")
+    val rawDir = file("src/main/res/raw")
 
-    ZipInputStream(res.body()).use { zis -> zis.forEach {
-        println("Extracting ${it.name}...")
-        val dest = File(project.repositories.mavenLocal().url.path, it.name)
-        if(it.isDirectory) dest.mkdirs() else zis.copyTo(FileOutputStream(dest))
-    }
+    doLast {
+        val corePackages = File(downloadDir, "java_packages-$coreVersion.zip")
+        download("https://github.com/VOICEVOX/voicevox_core/releases/download/$coreVersion/java_packages.zip", corePackages)
+        copy { from(zipTree(corePackages)); into(mavenLocalDir) }
+
+        // Onnxruntime.loadOnce() は既定で libvoicevox_onnxruntime.so を読み込む
+        for ((ortAbi, androidAbi) in listOf("arm64" to "arm64-v8a", "x64" to "x86_64")) {
+            val name = "voicevox_onnxruntime-android-$ortAbi-$ortVersion"
+            val tgz = File(downloadDir, "$name.tgz")
+            download("https://github.com/VOICEVOX/onnxruntime-builder/releases/download/voicevox_onnxruntime-$ortVersion/$name.tgz", tgz)
+            copy {
+                from(tarTree(tgz)) { include("$name/lib/libvoicevox_onnxruntime.so") }
+                eachFile { path = sourceName }
+                includeEmptyDirs = false
+                into(File(jniLibsDir, androidAbi))
+            }
+        }
+
+        // 1.vvm に冥鳴ひまり（スタイルID 14）が入っている
+        val vvm = File(downloadDir, "vvm-$vvmVersion/1.vvm")
+        download("https://github.com/VOICEVOX/voicevox_vvm/releases/download/$vvmVersion/1.vvm", vvm)
+        copy { from(vvm); into(rawDir); rename { "model.vvm" } }
     }
 }
 
@@ -89,9 +112,6 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-
-    // onnx runtime
-    implementation(libs.onnxruntime.android)
 
     // voicevox runtime
     implementation(libs.voicevox.core)

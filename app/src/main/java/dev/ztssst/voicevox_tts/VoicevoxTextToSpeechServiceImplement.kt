@@ -1,9 +1,6 @@
 package dev.ztssst.voicevox_tts
 
-import android.content.Context
-import android.content.Intent
 import android.media.AudioFormat
-import android.os.IBinder
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -11,76 +8,69 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import android.util.Log
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.io.IOException
+import java.io.InputStream
 import java.util.Locale
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
 @Suppress("PrivatePropertyName")
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
-    private lateinit var ttsService: VoicevoxTTSEngine
     private val TAG: String = "VoicevoxTextToSpeechService"
+    // モデルのコピーや辞書の解凍に時間がかかるので、初期化はバックグラウンドで行い、合成時に完了を待つ
+    private val initExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var ttsEngine: Future<VoicevoxTTSEngine>
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "OnCreate Started")
-        Log.d(TAG, "filesDir = $filesDir, $assets.locales")
-        val modelFile = File(filesDir, "model.vvm")
-        modelFile.outputStream().use {
-            val input = resources.openRawResource(R.raw.model)
-            input.copyTo(it)
-            input.close()
+        ttsEngine = initExecutor.submit<VoicevoxTTSEngine> {
+            prepareResources()
+            VoicevoxTTSEngine(File(filesDir, "model.vvm").absolutePath, File(filesDir, "open_jtalk_dict").absolutePath)
+                .also { Log.d(TAG, "Initialization Finished") }
         }
-        val jtalk = File(filesDir, "open_jtalk_dict.zip")
-        jtalk.outputStream().use {
-            val input = resources.openRawResource(R.raw.open_jtalk_dict)
-            input.copyTo(it)
-            input.close()
-        }
-        Log.d(TAG, "modelFile = $modelFile, jtalk = $jtalk")
-        if(File("${filesDir.absolutePath}/open_jtalk_dict").exists()) {
-            Log.d(TAG, "open_jtalk_dict already exists, skipping unzip")
-            ttsService = VoicevoxTTSEngine(modelFile.absolutePath, "${filesDir.absolutePath}/open_jtalk_dict")
-            Log.d(TAG, "OnCreate Finished")
-            return
-        }
-        // zip解凍の処理を別スレッドで行う
-        Executors.newSingleThreadExecutor().execute {
-            unzipJtalk(jtalk)
-            ttsService = VoicevoxTTSEngine(modelFile.absolutePath, "${filesDir.absolutePath}/open_jtalk_dict")
-            Log.d(TAG, "OnCreate Finished")
-        }
+        Log.d(TAG, "OnCreate Finished")
     }
 
-    private fun unzipJtalk(jtalk: File) {
-        // jtalk変数はzipファイルを握っています。以下にこのファイルをそのディレクトリに解凍するコードを書いてください。
-        val destDir = jtalk.parentFile
-        Log.d(TAG, "destDir = $destDir")
-        try {
-            ZipInputStream(FileInputStream(jtalk)).use { zipInputStream ->
-                var zipEntry: ZipEntry? = zipInputStream.nextEntry
-                while (zipEntry != null) {
-                    Log.d(TAG, "zipEntry = ${zipEntry.name}, isDirectory = ${zipEntry.isDirectory}")
-                    if (zipEntry.isDirectory) {
-                        val dir = File(destDir, zipEntry.name)
-                        dir.mkdirs()
-                        Log.d(TAG, "dir = $dir, Successfully Created")
-                    } else {
-                        val newFile = File(destDir, zipEntry.name)
-                        newFile.createNewFile()
-                        FileOutputStream(newFile).use { fos ->
-                            zipInputStream.copyTo(fos)
-                        }
-                        Log.d(TAG, "${newFile.absolutePath} Successfully Created")
-                    }
-                    zipEntry = zipInputStream.nextEntry
+    override fun onDestroy() {
+        initExecutor.shutdown()
+        super.onDestroy()
+    }
+
+    /** res/raw のモデルと辞書を filesDir に展開する。アプリが更新されたときだけやり直す */
+    private fun prepareResources() {
+        val stamp = File(filesDir, "resources.stamp")
+        val installed = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
+        if (stamp.exists() && stamp.readText() == installed) {
+            Log.d(TAG, "resources are up to date, skipping copy")
+            return
+        }
+        stamp.delete()
+        resources.openRawResource(R.raw.model).use { input ->
+            File(filesDir, "model.vvm").outputStream().use { input.copyTo(it) }
+        }
+        val dictDir = File(filesDir, "open_jtalk_dict")
+        dictDir.deleteRecursively()
+        resources.openRawResource(R.raw.open_jtalk_dict).use { unzip(it, filesDir) }
+        stamp.writeText(installed)
+        Log.d(TAG, "resources copied to $filesDir")
+    }
+
+    private fun unzip(input: InputStream, destDir: File) {
+        ZipInputStream(input).use { zipInputStream ->
+            var zipEntry: ZipEntry? = zipInputStream.nextEntry
+            while (zipEntry != null) {
+                val newFile = File(destDir, zipEntry.name)
+                if (zipEntry.isDirectory) {
+                    newFile.mkdirs()
+                } else {
+                    newFile.parentFile?.mkdirs()
+                    newFile.outputStream().use { zipInputStream.copyTo(it) }
                 }
+                zipEntry = zipInputStream.nextEntry
             }
-        } catch (e: IOException) {
-            e.printStackTrace()
         }
     }
 
@@ -125,18 +115,28 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
-        Log.d("${TAG}->onSynthesizeText", "onSynthesizeText called with arguments: $request, $callback")
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
-        val audioData = this.ttsService.synthesis(request.charSequenceText.toString())
+        val engine = try {
+            ttsEngine.get()
+        } catch (e: ExecutionException) {
+            Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            return
+        }
+        val audioData = try {
+            engine.synthesis(request.charSequenceText.toString())
+        } catch (e: Exception) {
+            Log.e("${TAG}->onSynthesizeText", "synthesis failed", e)
+            callback.error(TextToSpeech.ERROR_SYNTHESIS)
+            return
+        }
         val maxBufferSize: Int = callback.maxBufferSize
-        // テキストを音声に変換する処理
         callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         var offset = 0
         while (offset < audioData.size) {
-            val bytesToSend = Math.min(maxBufferSize, audioData.size - offset)
-            val dataChunk = audioData.copyOfRange(offset, offset + bytesToSend)
-            callback.audioAvailable(dataChunk, 0, bytesToSend)
+            val bytesToSend = minOf(maxBufferSize, audioData.size - offset)
+            callback.audioAvailable(audioData, offset, bytesToSend)
             offset += bytesToSend
         }
 
