@@ -1,5 +1,6 @@
 package dev.ztssst.voicevox_tts
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
@@ -9,12 +10,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,7 +32,7 @@ import dev.ztssst.voicevox_tts.ui.theme.Voicevox_ttsTheme
  * エンジンの設定画面。入力したテキストをこのエンジンで読み上げ、最初の音声が届くまでの時間を表示する。
  *
  * adb から `am start -n dev.ztssst.voicevox_tts/.MainActivity --es text "..."` で起動すると、
- * そのテキストをすぐに読み上げる。
+ * そのテキストをすぐに読み上げる。`--ez stop true` を付けると読み上げを止める。
  */
 class MainActivity: ComponentActivity() {
     private val TAG = "VoicevoxLatency"
@@ -68,7 +71,10 @@ class MainActivity: ComponentActivity() {
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("読み上げるテキスト") },
                         )
-                        Button(onClick = { speak(text) }) { Text("再生") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(onClick = { speak(text) }) { Text("再生") }
+                            OutlinedButton(onClick = { stop() }) { Text("停止") }
+                        }
                         Text(status)
                     }
                 }
@@ -76,9 +82,23 @@ class MainActivity: ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("stop", false)) stop()
+        intent.getStringExtra("text")?.let {
+            text = it
+            speak(it)
+        }
+    }
+
     override fun onDestroy() {
         tts?.shutdown()
         super.onDestroy()
+    }
+
+    private fun stop() {
+        tts?.stop()
+        status = "停止しました"
     }
 
     private fun speak(text: String) {
@@ -101,6 +121,11 @@ class MainActivity: ComponentActivity() {
 
         override fun onDone(utteranceId: String?) {
             val doneAt = SystemClock.elapsedRealtime()
+            if (firstAudioAt == 0L) {
+                Log.i(TAG, "done: no audio, total ${doneAt - requestedAt}ms")
+                status = "読み上げるものがありませんでした"
+                return
+            }
             Log.i(TAG, "done: first audio ${firstAudioAt - requestedAt}ms, total ${doneAt - requestedAt}ms")
             status = "最初の音声まで ${firstAudioAt - requestedAt}ms / 再生完了まで ${doneAt - requestedAt}ms"
         }

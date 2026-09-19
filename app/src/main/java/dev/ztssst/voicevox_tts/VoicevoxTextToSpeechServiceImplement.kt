@@ -7,6 +7,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import android.util.Log
+import jp.hiroshiba.voicevoxcore.exceptions.AnalyzeTextException
 import java.io.File
 import java.io.InputStream
 import java.util.Locale
@@ -123,24 +124,33 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
-        val audioData = try {
-            engine.synthesis(request.charSequenceText.toString())
+
+        callback.start(VoicevoxTTSEngine.SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        val maxBufferSize = callback.maxBufferSize
+        val completed = try {
+            // 合成できた区間から順に渡す。再生は最初の区間ができた時点で始まる
+            engine.synthesizeStreaming(request.charSequenceText.toString()) { pcm ->
+                var offset = 0
+                while (offset < pcm.size) {
+                    val length = minOf(maxBufferSize, pcm.size - offset)
+                    // onStop() などで止められると ERROR が返ってくるので、そこで打ち切る
+                    if (callback.audioAvailable(pcm, offset, length) != TextToSpeech.SUCCESS) return@synthesizeStreaming false
+                    offset += length
+                }
+                true
+            }
+        } catch (e: AnalyzeTextException) {
+            // 記号や絵文字だけのテキストなど、読み上げるものがなかった。エラーにはせず、無音で終える
+            Log.d("${TAG}->onSynthesizeText", "nothing to speak: ${e.message}")
+            callback.done()
+            return
         } catch (e: Exception) {
             Log.e("${TAG}->onSynthesizeText", "synthesis failed", e)
             callback.error(TextToSpeech.ERROR_SYNTHESIS)
             return
         }
-        val maxBufferSize: Int = callback.maxBufferSize
-        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        var offset = 0
-        while (offset < audioData.size) {
-            val bytesToSend = minOf(maxBufferSize, audioData.size - offset)
-            callback.audioAvailable(audioData, offset, bytesToSend)
-            offset += bytesToSend
-        }
-
-        callback.done()
+        if (completed) callback.done()
     }
 
     override fun onIsValidVoiceName(voiceName: String?): Int {

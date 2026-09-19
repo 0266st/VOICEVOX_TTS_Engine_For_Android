@@ -10,7 +10,8 @@ lifecycleRuntimeKtx = "2.6.1"
 activityCompose = "1.8.0"
 composeBom = "2024.09.00"
 media3CommonKtx = "1.5.1"
-voicevox = "0.17.0"
+# ストリーミング用の createAudioFeature / render は 0.17.0 には入っていない。次のリリース（9/25予定）が出たら正式版に更新する
+voicevox = "0.18.0-dev"
 voicevoxOnnxruntime = "1.23.2"
 voicevoxVvm = "0.17.0"
 

@@ -71,9 +71,15 @@ tasks.register("downloadVoicevox") {
     val rawDir = file("src/main/res/raw")
 
     doLast {
-        val corePackages = File(downloadDir, "java_packages-$coreVersion.zip")
-        download("https://github.com/VOICEVOX/voicevox_core/releases/download/$coreVersion/java_packages.zip", corePackages)
-        copy { from(zipTree(corePackages)); into(mavenLocalDir) }
+        // 未リリースの CORE を手元でビルドして ~/.m2 に入れてある場合は、それを使う
+        val installedCore = File(mavenLocalDir, "jp/hiroshiba/voicevoxcore/voicevoxcore-android/$coreVersion")
+        if (installedCore.exists()) {
+            println("Using VOICEVOX CORE $coreVersion from $installedCore")
+        } else {
+            val corePackages = File(downloadDir, "java_packages-$coreVersion.zip")
+            download("https://github.com/VOICEVOX/voicevox_core/releases/download/$coreVersion/java_packages.zip", corePackages)
+            copy { from(zipTree(corePackages)); into(mavenLocalDir) }
+        }
 
         // Onnxruntime.loadOnce() は既定で libvoicevox_onnxruntime.so を読み込む
         for ((ortAbi, androidAbi) in listOf("arm64" to "arm64-v8a", "x64" to "x86_64")) {
