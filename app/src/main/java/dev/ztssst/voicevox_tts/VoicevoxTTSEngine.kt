@@ -5,6 +5,8 @@ import jp.hiroshiba.voicevoxcore.blocking.Onnxruntime
 import jp.hiroshiba.voicevoxcore.blocking.OpenJtalk
 import jp.hiroshiba.voicevoxcore.blocking.Synthesizer
 import jp.hiroshiba.voicevoxcore.blocking.VoiceModelFile
+import java.lang.ref.PhantomReference
+import java.lang.ref.ReferenceQueue
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -22,6 +24,12 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String){
         this.synthesizer = synthesizer
         Log.d(TAG, "VoicevoxTTSEngine Initialized")
     }
+
+    /**
+     * このエンジンのネイティブの資源（Synthesizer が持つ、モデルの推論セッション）が、ファイナライザまで含めて
+     * 解放されたら、[queue] に届く参照を返す。Synthesizer は close() を持たず、ファイナライザで解放される。
+     */
+    fun trackNativeRelease(queue: ReferenceQueue<Any>): PhantomReference<Any> = PhantomReference(synthesizer, queue)
 
     /** 16-bit PCM（24kHz, モノラル）を返す */
     fun synthesis(text: String, styleId: Int = 14): ByteArray{ // 冥鳴ひまりでやるので、defaultのstyleIdは14

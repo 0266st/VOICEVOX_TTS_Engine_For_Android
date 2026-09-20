@@ -173,4 +173,69 @@ class SharedResourceTest {
     fun releaseWithoutAcquireIsAnError() {
         newResource().release()
     }
+
+    @Test
+    fun afterDisposeRunsOnceAfterEachDisposal() {
+        val order = mutableListOf<String>()
+        val resource = SharedResource(
+            create = { CompletableFuture.completedFuture("engine") },
+            dispose = { order += "dispose" },
+            idleMillis = 1000,
+            scheduler = scheduler,
+            afterDispose = { order += "afterDispose" },
+        )
+        resource.acquire()
+        resource.release()
+        scheduler.advance(1000)
+        assertEquals(listOf("dispose", "afterDispose"), order)
+        scheduler.advance(10_000)
+        assertEquals(listOf("dispose", "afterDispose"), order) // 二重には呼ばない
+    }
+
+    @Test
+    fun aCreationRegisteredAfterAReleaseRunsAfterTheDisposal() {
+        // エンジンの作成を、解放と同じ場所（1本のスレッド）に登録する。解放のあとに acquire しても、作成は解放より後ろに並ぶ
+        val order = mutableListOf<String>()
+        var count = 0
+        val resource = SharedResource(
+            create = {
+                val name = "engine${++count}"
+                CompletableFuture<String>().also { f -> scheduler.execute { order += "create $name"; f.complete(name) } }
+            },
+            dispose = { order += "dispose $it" },
+            idleMillis = 1000,
+            scheduler = scheduler,
+            afterDispose = { order += "afterDispose" },
+        )
+        resource.acquire()
+        scheduler.runBackground() // engine1 ができる
+        resource.release()
+        scheduler.advance(1000) // 解放を登録して、実行する前に…
+        resource.acquire() // …すぐ次の使う側が来て、作成を登録する
+        scheduler.runBackground()
+        assertEquals(listOf("create engine1", "dispose engine1", "afterDispose", "create engine2"), order)
+    }
+
+    @Test
+    fun refreshRecreatesAFailedResourceWithoutChangingTheUserCount() {
+        val resource = newResource(failFirst = true)
+        val failed = resource.acquire() // 使う側は1
+        assertTrue(failed.isDone)
+        val refreshed = resource.refresh()
+        assertNotSame(failed, refreshed)
+        assertEquals("engine2", refreshed.get())
+        // 使う側の数は1のまま。1回 release すれば、待ち時間のあとに解放される（増えていたら、解放されない）
+        resource.release()
+        scheduler.advance(1000)
+        assertEquals(listOf("engine2"), disposed)
+    }
+
+    @Test
+    fun refreshReturnsTheSameResourceWhenItIsHealthy() {
+        val resource = newResource()
+        val first = resource.acquire()
+        assertSame(first, resource.refresh())
+        assertEquals(listOf("engine1"), created)
+    }
 }
+

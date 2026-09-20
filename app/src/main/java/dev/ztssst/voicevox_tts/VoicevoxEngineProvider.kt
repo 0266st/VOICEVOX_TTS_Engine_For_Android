@@ -3,6 +3,7 @@ package dev.ztssst.voicevox_tts
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.res.Configuration
+import android.os.Debug
 import android.util.Log
 import java.io.File
 import java.util.concurrent.Executors
@@ -18,13 +19,16 @@ import java.util.concurrent.Future
 object VoicevoxEngineProvider {
     private const val TAG = "VoicevoxEngineProvider"
     private const val IDLE_RELEASE_MILLIS = 5 * 60 * 1000L
-    private const val GC_DELAY_MILLIS = 1000L
 
-    // モデルのコピーや辞書の解凍に時間がかかるので、作るのはバックグラウンドで行う
-    private val initExecutor = Executors.newSingleThreadExecutor { Thread(it, "voicevox-engine-init").apply { isDaemon = true } }
-    private val scheduler = ExecutorTaskScheduler(
-        Executors.newSingleThreadScheduledExecutor { Thread(it, "voicevox-engine-release").apply { isDaemon = true } },
-    )
+    // 解放を待つ時間の上限。これを過ぎたら、待たずに次の作成へ進む（エンジンが、どこかに参照されたままのとき）
+    private const val NATIVE_RELEASE_TIMEOUT_MILLIS = 5_000L
+
+    // エンジンの作成、解放、解放のタイマーは、すべて、この1本のスレッドで、登録した順に処理する。
+    // 解放のあとに登録した作成は、解放が終わってから始まるので、古いエンジン（約230MB）と新しいエンジンが、
+    // 同時に生きて、メモリが足りなくなることがない。モデルのコピーや辞書の解凍に時間がかかるので、バックグラウンドで行う
+    private val executor = Executors.newSingleThreadScheduledExecutor { Thread(it, "voicevox-engine").apply { isDaemon = true } }
+    private val scheduler = ExecutorTaskScheduler(executor)
+    private val releaseTracker = ReleaseTracker()
     private var shared: SharedResource<VoicevoxTTSEngine>? = null
 
     /** エンジンを使い始める。使い終わったら [release] を呼ぶ。エンジンは初期化が終わるまで、[Future] の中で待つ */
@@ -39,12 +43,20 @@ object VoicevoxEngineProvider {
         shared?.release()
     }
 
+    /**
+     * エンジンの初期化に失敗していたら、作り直して返す。[acquire] 済みの使う側が、失敗のあとで、もう一度試すためのもの。
+     * 使う側の数は変わらないので、[release] は、[acquire] の回数だけ呼べばよい
+     */
+    @Synchronized
+    fun refresh(): Future<VoicevoxTTSEngine> = checkNotNull(shared) { "refresh() was called before acquire()" }.refresh()
+
     private fun newResource(appContext: Context): SharedResource<VoicevoxTTSEngine> {
         val resource = SharedResource(
-            create = { initExecutor.submit<VoicevoxTTSEngine> { createEngine(appContext) } },
+            create = { executor.submit<VoicevoxTTSEngine> { createEngine(appContext) } },
             dispose = { engine -> dispose(engine) },
             idleMillis = IDLE_RELEASE_MILLIS,
             scheduler = scheduler,
+            afterDispose = { reclaimMemory() },
         )
         appContext.registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
@@ -71,15 +83,27 @@ object VoicevoxEngineProvider {
             .also { Log.d(TAG, "Initialization Finished") }
     }
 
-    @Suppress("UNUSED_PARAMETER")
     private fun dispose(engine: VoicevoxTTSEngine) {
-        // Synthesizer などは close() を持たず、GC のときのファイナライザでネイティブのメモリを解放する。
-        // 参照を手放したので、GCを促して、メモリを早く返す。この呼び出しが終わるまでは、呼び出し元がまだ参照しているので、少し待つ
+        // エンジンのネイティブの資源は、Synthesizer などのファイナライザで解放される（close() を持たない）。
+        // ここでは参照を手放すだけで（この呼び出しが終わると、エンジンは、どこからも参照されない）、
+        // 解放を見張っておく。実際の解放は、このあとの reclaimMemory() で促して、見届ける
         Log.d(TAG, "Releasing the engine")
-        scheduler.schedule(GC_DELAY_MILLIS) {
-            System.gc()
-            Log.d(TAG, "Requested a GC to free the engine's native memory")
-        }
+        releaseTracker.watch { engine.trackNativeRelease(it) }
+    }
+
+    /**
+     * 参照がなくなったエンジンのネイティブのメモリが、実際に解放されるまで、GC を促しながら待つ。
+     * 次の作成は、これが終わってから始まる。エンジンが解放されない（どこかが参照している）ときは、時間切れで先へ進む
+     */
+    private fun reclaimMemory() {
+        val startedAt = System.nanoTime()
+        val before = Debug.getNativeHeapAllocatedSize()
+        val released = releaseTracker.awaitReleased(NATIVE_RELEASE_TIMEOUT_MILLIS)
+        Log.d(
+            TAG,
+            "Reclaimed the engine's memory (released = %b, waited %d ms): native heap %d MB -> %d MB"
+                .format(released, (System.nanoTime() - startedAt) / 1_000_000, before shr 20, Debug.getNativeHeapAllocatedSize() shr 20),
+        )
     }
 
     /** res/raw のモデルと辞書を filesDir に展開する。アプリが更新されたときだけやり直す */

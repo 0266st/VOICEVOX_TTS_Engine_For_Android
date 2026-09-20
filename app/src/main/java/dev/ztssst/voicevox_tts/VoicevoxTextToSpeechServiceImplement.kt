@@ -14,8 +14,10 @@ import java.util.concurrent.Future
 @Suppress("PrivatePropertyName")
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     private val TAG: String = "VoicevoxTextToSpeechService"
-    // エンジンは、サービスが作り直されても使い回す。初期化には時間がかかるので、合成のときに完了を待つ
-    private lateinit var ttsEngine: Future<VoicevoxTTSEngine>
+    // エンジンは、サービスが作り直されても使い回す。初期化には時間がかかるので、合成のときに完了を待つ。
+    // onDestroy のあと、このサービスのインスタンスは、Binder（mBinder が、外側のサービスを参照する）を通して、
+    // しばらく生き残ることがある。そのあいだ、エンジンを掴み続けないよう、onDestroy で手放す
+    @Volatile private var ttsEngine: Future<VoicevoxTTSEngine>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -25,6 +27,7 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onDestroy() {
+        ttsEngine = null
         VoicevoxEngineProvider.release()
         super.onDestroy()
     }
@@ -71,8 +74,13 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
+        val future = ttsEngine
+        if (future == null) { // onDestroy のあとに、要求が来た
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            return
+        }
         val engine = try {
-            ttsEngine.get()
+            future.get()
         } catch (e: InterruptedException) {
             // 初期化を待っているあいだに、合成のスレッドが止められた。割り込みの印を戻して、エラーを返す
             Thread.currentThread().interrupt()
@@ -81,6 +89,9 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
             return
         } catch (e: ExecutionException) {
             Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
+            // 失敗した Future を持ち続けると、このサービスが生きているあいだ、ずっと失敗し続ける。
+            // 次の要求のために、初期化をやり直す（使う側の数は変わらない）
+            ttsEngine = VoicevoxEngineProvider.refresh()
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
