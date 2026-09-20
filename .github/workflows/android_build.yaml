@@ -8,6 +8,8 @@ on:
     branches:
       - master
   workflow_dispatch:
+  # リリースのワークフロー（release.yaml）から、APK のビルドとして呼び出される
+  workflow_call:
 
 # 既定では読み取りだけにする。書き込みが要る処理（リリースなど）は、そのジョブにだけ権限を足す
 permissions:

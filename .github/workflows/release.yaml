@@ -1,0 +1,90 @@
+name: Release
+
+# タグ（v*）を push すると、APK をビルドして、GitHub Release を作り、APK を添付する。
+# リリースノート（変更履歴）は、GitHub が、前のリリースからマージされた PR を並べて自動で作る。
+#
+# タグは手で作る（git tag -s vX.Y.Z）。バージョン（v1.0.0-alpha.1 のようなプレリリースも）は、人が決める。
+# タグは app/build.gradle.kts の versionName と一致していなければならず、master に含まれるコミットでなければならない。
+# 手順は RELEASING.md を参照。
+#
+# workflow_dispatch は、リリースを作らずに、APK のビルドだけを試す（このファイルの確認用）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 間違ったタグで、時間のかかるビルドを始めないよう、先に確認する
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check that the tag matches versionName
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ]; then
+            echo "::error::app/build.gradle.kts から versionName を読み取れませんでした"
+            exit 1
+          fi
+          if [ "$tag" != "$version" ]; then
+            echo "::error::タグ $GITHUB_REF_NAME が、app/build.gradle.kts の versionName（$version）と一致しません。versionName を v なしのタグに合わせる PR をマージしてから、タグを打ち直してください"
+            exit 1
+          fi
+          echo "タグ $GITHUB_REF_NAME は versionName（$version）と一致しています"
+      # master に取り込まれていないコミットから、リリースを作らない。履歴が大きいので、clone せず API で比べる
+      - name: Check that the tagged commit is on master
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" --jq .status)
+          case "$status" in
+            identical | behind) echo "タグのコミットは master に含まれています（$status）" ;;
+            *)
+              echo "::error::タグのコミット（$GITHUB_SHA）は master に含まれていません（$status）。PR をマージしてから、master のコミットにタグを打ってください"
+              exit 1
+              ;;
+          esac
+
+  # APK のビルドは、CI と同じ手順を使う（android_build.yaml）
+  build:
+    needs: check
+    uses: ./.github/workflows/android_build.yaml
+
+  github-release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the APK
+        uses: actions/download-artifact@v8
+        with:
+          name: app-debug.apk
+      - name: Warn about the signature
+        run: echo "::warning title=デバッグ署名の APK::この APK は、ビルドのたびに変わるデバッグ鍵で署名されています。前のリリースの上には、更新インストールできません（アンインストールが必要です）。"
+      - name: Create the release with the APK attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="voicevox-tts-engine-${GITHUB_REF_NAME}.apk"
+          mv app-debug.apk "$apk"
+          # v1.0.0-alpha.1 のようなバージョンは、プレリリースにする
+          case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; *) pre= ;; esac
+          # --verify-tag は、タグを勝手に作らない（push されたタグが、すでにあることを確かめる）。
+          # 同じタグで再実行したときは、すでにあるリリースに、APK を上書きで添付する
+          gh release create "$GITHUB_REF_NAME" "$apk" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes $pre \
+            || gh release upload "$GITHUB_REF_NAME" "$apk" --repo "$GITHUB_REPOSITORY" --clobber
