@@ -7,52 +7,38 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import android.util.Log
-import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 @Suppress("PrivatePropertyName")
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     private val TAG: String = "VoicevoxTextToSpeechService"
-    // モデルのコピーや辞書の解凍に時間がかかるので、初期化はバックグラウンドで行い、合成時に完了を待つ
-    private val initExecutor = Executors.newSingleThreadExecutor()
-    private lateinit var ttsEngine: Future<VoicevoxTTSEngine>
+    // エンジンは、サービスが作り直されても使い回す。初期化には時間がかかるので、合成のときに完了を待つ。
+    // onDestroy のあと、このサービスのインスタンスは、Binder（mBinder が、外側のサービスを参照する）を通して、
+    // しばらく生き残ることがある。そのあいだ、エンジンを掴み続けないよう、onDestroy で手放す
+    @Volatile private var ttsEngine: Future<VoicevoxTTSEngine>? = null
+
+    // ttsEngine の作り直し（合成のスレッド）と、破棄（メインスレッド）を、直列にするためのロック。
+    // 作り直しは、破棄より前に終わるか、破棄のあとなら、何もしない（破棄のあとに作り直すと、使う側のいない
+    // エンジンが、誰にも解放されずに残る）
+    private val lifecycleLock = Any()
+    private var destroyed = false
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "OnCreate Started")
-        ttsEngine = initExecutor.submit<VoicevoxTTSEngine> {
-            prepareResources()
-            VoicevoxTTSEngine(File(filesDir, "model.vvm").absolutePath, File(filesDir, "open_jtalk_dict").absolutePath)
-                .also { Log.d(TAG, "Initialization Finished") }
-        }
+        ttsEngine = VoicevoxEngineProvider.acquire(this)
         Log.d(TAG, "OnCreate Finished")
     }
 
     override fun onDestroy() {
-        initExecutor.shutdown()
+        synchronized(lifecycleLock) {
+            destroyed = true
+            ttsEngine = null
+            VoicevoxEngineProvider.release()
+        }
         super.onDestroy()
-    }
-
-    /** res/raw のモデルと辞書を filesDir に展開する。アプリが更新されたときだけやり直す */
-    private fun prepareResources() {
-        val stamp = File(filesDir, "resources.stamp")
-        val installed = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
-        if (stamp.exists() && stamp.readText() == installed) {
-            Log.d(TAG, "resources are up to date, skipping copy")
-            return
-        }
-        stamp.delete()
-        resources.openRawResource(R.raw.model).use { input ->
-            File(filesDir, "model.vvm").outputStream().use { input.copyTo(it) }
-        }
-        val dictDir = File(filesDir, "open_jtalk_dict")
-        dictDir.deleteRecursively()
-        resources.openRawResource(R.raw.open_jtalk_dict).use { unzipSafely(it, filesDir) }
-        stamp.writeText(installed)
-        Log.d(TAG, "resources copied to $filesDir")
     }
 
     override fun onIsLanguageAvailable(lang: String, country: String, variant: String): Int {
@@ -97,8 +83,13 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
+        val future = ttsEngine
+        if (future == null) { // onDestroy のあとに、要求が来た
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            return
+        }
         val engine = try {
-            ttsEngine.get()
+            future.get()
         } catch (e: InterruptedException) {
             // 初期化を待っているあいだに、合成のスレッドが止められた。割り込みの印を戻して、エラーを返す
             Thread.currentThread().interrupt()
@@ -107,6 +98,12 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
             return
         } catch (e: ExecutionException) {
             Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
+            // 失敗した Future を持ち続けると、このサービスが生きているあいだ、ずっと失敗し続ける。
+            // 次の要求のために、初期化をやり直す（使う側の数は変わらない）。破棄のあとや、すでに別の要求が
+            // 作り直したあと（ttsEngine が、いま待った Future と違う）なら、何もしない
+            synchronized(lifecycleLock) {
+                if (!destroyed && ttsEngine === future) ttsEngine = VoicevoxEngineProvider.refresh()
+            }
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
