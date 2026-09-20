@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+# IDE設定は各自の環境に依存するので管理しない（コードスタイルのみ共有）
+/.idea/*
+!/.idea/codeStyles/
