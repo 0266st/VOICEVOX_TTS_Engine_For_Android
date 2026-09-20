@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # GitHub Actions の非推奨（Node のバージョンなど）に、気づかないまま古くなるのを防ぐ
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
