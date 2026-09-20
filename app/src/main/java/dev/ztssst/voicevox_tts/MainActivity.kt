@@ -1,5 +1,6 @@
 package dev.ztssst.voicevox_tts
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
@@ -9,12 +10,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,7 +32,7 @@ import dev.ztssst.voicevox_tts.ui.theme.Voicevox_ttsTheme
  * エンジンの設定画面。入力したテキストをこのエンジンで読み上げ、最初の音声が届くまでの時間を表示する。
  *
  * adb から `am start -n dev.ztssst.voicevox_tts/.MainActivity --es text "..."` で起動すると、
- * そのテキストをすぐに読み上げる。
+ * そのテキストをすぐに読み上げる。`--ez stop true` を付けると読み上げを止める。
  */
 class MainActivity: ComponentActivity() {
     private val TAG = "VoicevoxLatency"
@@ -51,7 +54,10 @@ class MainActivity: ComponentActivity() {
         tts = TextToSpeech(this, { result ->
             ready = result == TextToSpeech.SUCCESS
             status = if (ready) "準備完了" else "エンジンに接続できませんでした"
-            if (ready) pendingText?.let { speak(it) }
+            if (ready) pendingText?.let {
+                pendingText = null
+                speak(it)
+            }
         }, packageName).apply { setOnUtteranceProgressListener(listener) }
 
         setContent {
@@ -68,11 +74,23 @@ class MainActivity: ComponentActivity() {
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("読み上げるテキスト") },
                         )
-                        Button(onClick = { speak(text) }) { Text("再生") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(onClick = { speak(text) }) { Text("再生") }
+                            OutlinedButton(onClick = { stop() }) { Text("停止") }
+                        }
                         Text(status)
                     }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("stop", false)) stop()
+        intent.getStringExtra("text")?.let {
+            text = it
+            speak(it)
         }
     }
 
@@ -81,8 +99,17 @@ class MainActivity: ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun stop() {
+        pendingText = null // 準備が終わる前に停止されたら、待っている要求も取り消す
+        tts?.stop()
+        status = "停止しました"
+    }
+
     private fun speak(text: String) {
-        if (!ready) return
+        if (!ready) { // 準備が終わる前に届いた要求は、なくさずに、準備が終わってから読む
+            pendingText = text
+            return
+        }
         requestedAt = SystemClock.elapsedRealtime()
         firstAudioAt = 0L
         status = "合成中…"

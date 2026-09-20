@@ -7,6 +7,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import android.util.Log
+import jp.hiroshiba.voicevoxcore.exceptions.AnalyzeTextException
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutionException
@@ -32,6 +33,10 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onDestroy() {
+        // エンジンの合成用のスレッドを止める。初期化と同じスレッドで、初期化のあとに順に処理するので、
+        // 初期化の途中で destroy されても、初期化が終わってから止まる（失敗していれば、何もしない）
+        val engine = ttsEngine
+        initExecutor.execute { runCatching { engine.get().close() } }
         initExecutor.shutdown()
         super.onDestroy()
     }
@@ -91,12 +96,29 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         return arr
     }
 
+    // 進行中の合成。onStop() は、別のスレッドから呼ばれるので、ここを通して、合成を止める
+    @Volatile
+    private var currentSynthesis: CancellationToken? = null
+
     override fun onStop() {
         Log.d("${TAG}->onStop", "onStop called")
+        // 渡し始めるのを待っているあいだは、audioAvailable が呼ばれず、止められたことに気づけない。
+        // そのまま待たせると、次の要求の合成が、その待ち（最大10秒）のあいだ、始められない
+        currentSynthesis?.cancel()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
+        val token = CancellationToken()
+        currentSynthesis = token
+        try {
+            synthesize(request, callback, token)
+        } finally {
+            if (currentSynthesis === token) currentSynthesis = null
+        }
+    }
+
+    private fun synthesize(request: SynthesisRequest, callback: SynthesisCallback, token: CancellationToken) {
         val engine = try {
             ttsEngine.get()
         } catch (e: InterruptedException) {
@@ -110,25 +132,34 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
-        val audioData = try {
-            engine.synthesis(request.charSequenceText.toString())
+        if (token.isCancelled) return // 初期化を待っているあいだに、止められた
+
+        callback.start(VoicevoxTTSEngine.SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        val maxBufferSize = callback.maxBufferSize
+        val completed = try {
+            // 合成できた区間から順に渡す。再生は最初の区間ができた時点で始まる
+            engine.synthesizeStreaming(request.charSequenceText.toString(), token = token) { pcm ->
+                var offset = 0
+                while (offset < pcm.size) {
+                    val length = minOf(maxBufferSize, pcm.size - offset)
+                    // onStop() などで止められると ERROR が返ってくるので、そこで打ち切る
+                    if (callback.audioAvailable(pcm, offset, length) != TextToSpeech.SUCCESS) return@synthesizeStreaming false
+                    offset += length
+                }
+                true
+            }
+        } catch (e: AnalyzeTextException) {
+            // 記号や絵文字だけのテキストなど、読み上げるものがなかった。エラーにはせず、無音で終える
+            Log.d("${TAG}->onSynthesizeText", "nothing to speak: ${e.message}")
+            callback.done()
+            return
         } catch (e: Exception) {
             Log.e("${TAG}->onSynthesizeText", "synthesis failed", e)
             callback.error(TextToSpeech.ERROR_SYNTHESIS)
             return
         }
-        val maxBufferSize: Int = callback.maxBufferSize
-        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        var offset = 0
-        while (offset < audioData.size) {
-            val bytesToSend = minOf(maxBufferSize, audioData.size - offset)
-            // onStop() などで止められると ERROR が返ってくるので、そこで打ち切る（done() も呼ばない）
-            if (callback.audioAvailable(audioData, offset, bytesToSend) != TextToSpeech.SUCCESS) return
-            offset += bytesToSend
-        }
-
-        callback.done()
+        if (completed) callback.done()
     }
 
     override fun onIsValidVoiceName(voiceName: String?): Int {
