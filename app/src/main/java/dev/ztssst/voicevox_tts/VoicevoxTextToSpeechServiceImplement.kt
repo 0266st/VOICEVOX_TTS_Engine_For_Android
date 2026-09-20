@@ -7,71 +7,26 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import android.util.Log
-import java.io.File
-import java.io.InputStream
 import java.util.Locale
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
 @Suppress("PrivatePropertyName")
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     private val TAG: String = "VoicevoxTextToSpeechService"
-    // モデルのコピーや辞書の解凍に時間がかかるので、初期化はバックグラウンドで行い、合成時に完了を待つ
-    private val initExecutor = Executors.newSingleThreadExecutor()
+    // エンジンは、サービスが作り直されても使い回す。初期化には時間がかかるので、合成のときに完了を待つ
     private lateinit var ttsEngine: Future<VoicevoxTTSEngine>
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "OnCreate Started")
-        ttsEngine = initExecutor.submit<VoicevoxTTSEngine> {
-            prepareResources()
-            VoicevoxTTSEngine(File(filesDir, "model.vvm").absolutePath, File(filesDir, "open_jtalk_dict").absolutePath)
-                .also { Log.d(TAG, "Initialization Finished") }
-        }
+        ttsEngine = VoicevoxEngineProvider.acquire(this)
         Log.d(TAG, "OnCreate Finished")
     }
 
     override fun onDestroy() {
-        initExecutor.shutdown()
+        VoicevoxEngineProvider.release()
         super.onDestroy()
-    }
-
-    /** res/raw のモデルと辞書を filesDir に展開する。アプリが更新されたときだけやり直す */
-    private fun prepareResources() {
-        val stamp = File(filesDir, "resources.stamp")
-        val installed = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
-        if (stamp.exists() && stamp.readText() == installed) {
-            Log.d(TAG, "resources are up to date, skipping copy")
-            return
-        }
-        stamp.delete()
-        resources.openRawResource(R.raw.model).use { input ->
-            File(filesDir, "model.vvm").outputStream().use { input.copyTo(it) }
-        }
-        val dictDir = File(filesDir, "open_jtalk_dict")
-        dictDir.deleteRecursively()
-        resources.openRawResource(R.raw.open_jtalk_dict).use { unzip(it, filesDir) }
-        stamp.writeText(installed)
-        Log.d(TAG, "resources copied to $filesDir")
-    }
-
-    private fun unzip(input: InputStream, destDir: File) {
-        ZipInputStream(input).use { zipInputStream ->
-            var zipEntry: ZipEntry? = zipInputStream.nextEntry
-            while (zipEntry != null) {
-                val newFile = File(destDir, zipEntry.name)
-                if (zipEntry.isDirectory) {
-                    newFile.mkdirs()
-                } else {
-                    newFile.parentFile?.mkdirs()
-                    newFile.outputStream().use { zipInputStream.copyTo(it) }
-                }
-                zipEntry = zipInputStream.nextEntry
-            }
-        }
     }
 
     override fun onIsLanguageAvailable(lang: String, country: String, variant: String): Int {
