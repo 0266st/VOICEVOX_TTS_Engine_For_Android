@@ -101,6 +101,11 @@ class MainActivity: ComponentActivity() {
 
         override fun onDone(utteranceId: String?) {
             val doneAt = SystemClock.elapsedRealtime()
+            if (firstAudioAt == 0L) {
+                Log.i(TAG, "done: no audio, total ${doneAt - requestedAt}ms")
+                status = "読み上げるものがありませんでした"
+                return
+            }
             Log.i(TAG, "done: first audio ${firstAudioAt - requestedAt}ms, total ${doneAt - requestedAt}ms")
             status = "最初の音声まで ${firstAudioAt - requestedAt}ms / 再生完了まで ${doneAt - requestedAt}ms"
         }
