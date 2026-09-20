@@ -5,11 +5,8 @@ import android.content.Context
 import android.content.res.Configuration
 import android.util.Log
 import java.io.File
-import java.io.InputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
 /**
  * [VoicevoxTTSEngine] を、サービスが作り直されても、同じプロセスのあいだは使い回す。
@@ -100,24 +97,8 @@ object VoicevoxEngineProvider {
         }
         val dictDir = File(filesDir, "open_jtalk_dict")
         dictDir.deleteRecursively()
-        context.resources.openRawResource(R.raw.open_jtalk_dict).use { unzip(it, filesDir) }
+        context.resources.openRawResource(R.raw.open_jtalk_dict).use { unzipSafely(it, filesDir) }
         stamp.writeText(installed)
         Log.d(TAG, "resources copied to $filesDir")
-    }
-
-    private fun unzip(input: InputStream, destDir: File) {
-        ZipInputStream(input).use { zipInputStream ->
-            var zipEntry: ZipEntry? = zipInputStream.nextEntry
-            while (zipEntry != null) {
-                val newFile = File(destDir, zipEntry.name)
-                if (zipEntry.isDirectory) {
-                    newFile.mkdirs()
-                } else {
-                    newFile.parentFile?.mkdirs()
-                    newFile.outputStream().use { zipInputStream.copyTo(it) }
-                }
-                zipEntry = zipInputStream.nextEntry
-            }
-        }
     }
 }

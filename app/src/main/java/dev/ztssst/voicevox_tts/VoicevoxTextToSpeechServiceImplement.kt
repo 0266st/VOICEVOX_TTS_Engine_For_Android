@@ -73,6 +73,12 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
         val engine = try {
             ttsEngine.get()
+        } catch (e: InterruptedException) {
+            // 初期化を待っているあいだに、合成のスレッドが止められた。割り込みの印を戻して、エラーを返す
+            Thread.currentThread().interrupt()
+            Log.w("${TAG}->onSynthesizeText", "interrupted while waiting for initialization")
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            return
         } catch (e: ExecutionException) {
             Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
             callback.error(TextToSpeech.ERROR_SERVICE)
@@ -91,7 +97,8 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         var offset = 0
         while (offset < audioData.size) {
             val bytesToSend = minOf(maxBufferSize, audioData.size - offset)
-            callback.audioAvailable(audioData, offset, bytesToSend)
+            // onStop() などで止められると ERROR が返ってくるので、そこで打ち切る（done() も呼ばない）
+            if (callback.audioAvailable(audioData, offset, bytesToSend) != TextToSpeech.SUCCESS) return
             offset += bytesToSend
         }
 
