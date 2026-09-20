@@ -54,7 +54,10 @@ class MainActivity: ComponentActivity() {
         tts = TextToSpeech(this, { result ->
             ready = result == TextToSpeech.SUCCESS
             status = if (ready) "準備完了" else "エンジンに接続できませんでした"
-            if (ready) pendingText?.let { speak(it) }
+            if (ready) pendingText?.let {
+                pendingText = null
+                speak(it)
+            }
         }, packageName).apply { setOnUtteranceProgressListener(listener) }
 
         setContent {
@@ -97,12 +100,16 @@ class MainActivity: ComponentActivity() {
     }
 
     private fun stop() {
+        pendingText = null // 準備が終わる前に停止されたら、待っている要求も取り消す
         tts?.stop()
         status = "停止しました"
     }
 
     private fun speak(text: String) {
-        if (!ready) return
+        if (!ready) { // 準備が終わる前に届いた要求は、なくさずに、準備が終わってから読む
+            pendingText = text
+            return
+        }
         requestedAt = SystemClock.elapsedRealtime()
         firstAudioAt = 0L
         status = "合成中…"

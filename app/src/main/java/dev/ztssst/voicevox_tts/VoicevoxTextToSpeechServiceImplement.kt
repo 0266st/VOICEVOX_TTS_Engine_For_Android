@@ -33,6 +33,10 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onDestroy() {
+        // エンジンの合成用のスレッドを止める。初期化と同じスレッドで、初期化のあとに順に処理するので、
+        // 初期化の途中で destroy されても、初期化が終わってから止まる（失敗していれば、何もしない）
+        val engine = ttsEngine
+        initExecutor.execute { runCatching { engine.get().close() } }
         initExecutor.shutdown()
         super.onDestroy()
     }
@@ -92,12 +96,29 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         return arr
     }
 
+    // 進行中の合成。onStop() は、別のスレッドから呼ばれるので、ここを通して、合成を止める
+    @Volatile
+    private var currentSynthesis: CancellationToken? = null
+
     override fun onStop() {
         Log.d("${TAG}->onStop", "onStop called")
+        // 渡し始めるのを待っているあいだは、audioAvailable が呼ばれず、止められたことに気づけない。
+        // そのまま待たせると、次の要求の合成が、その待ち（最大10秒）のあいだ、始められない
+        currentSynthesis?.cancel()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
+        val token = CancellationToken()
+        currentSynthesis = token
+        try {
+            synthesize(request, callback, token)
+        } finally {
+            if (currentSynthesis === token) currentSynthesis = null
+        }
+    }
+
+    private fun synthesize(request: SynthesisRequest, callback: SynthesisCallback, token: CancellationToken) {
         val engine = try {
             ttsEngine.get()
         } catch (e: InterruptedException) {
@@ -111,12 +132,13 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
+        if (token.isCancelled) return // 初期化を待っているあいだに、止められた
 
         callback.start(VoicevoxTTSEngine.SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
         val maxBufferSize = callback.maxBufferSize
         val completed = try {
             // 合成できた区間から順に渡す。再生は最初の区間ができた時点で始まる
-            engine.synthesizeStreaming(request.charSequenceText.toString()) { pcm ->
+            engine.synthesizeStreaming(request.charSequenceText.toString(), token = token) { pcm ->
                 var offset = 0
                 while (offset < pcm.size) {
                     val length = minOf(maxBufferSize, pcm.size - offset)

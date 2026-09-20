@@ -54,6 +54,46 @@ class SegmentPlanTest {
     }
 
     @Test
+    fun noSegmentExceedsTheMaximumForAnyTotalLength() {
+        // 残りが上限をわずかに超えるとき（例: 4.4秒）に、端数を吸収して上限を超えていた（Copilot の指摘した不具合）
+        for (model in listOf(slowDevice, fastDevice)) {
+            var total = 0.3
+            while (total < 130.0) {
+                val plan = planSegments(total, model, nowSeconds = 0.15, bufferedSeconds = 0.0)
+                assertLimits(total, plan.segmentSeconds, "total=$total")
+                total += 0.37
+            }
+        }
+    }
+
+    @Test
+    fun noSegmentExceedsTheMaximumInTheFallbackPlanEither() {
+        // どう分けても間に合わないときの、最大の長さで進める分け方
+        var total = 0.3
+        while (total < 60.0) {
+            val plan = planSegments(total, slowDevice, nowSeconds = 100.0, bufferedSeconds = 0.0, fixedStartSeconds = 1.0)
+            assertLimits(total, plan.segmentSeconds, "fallback total=$total")
+            total += 0.29
+        }
+    }
+
+    @Test
+    fun aRemainderJustOverTheMaximumIsSplitSoThatTheTailIsNotTooShort() {
+        val plan = planSegments(4.4, slowDevice, nowSeconds = 100.0, bufferedSeconds = 0.0, fixedStartSeconds = 1.0)
+        assertEquals(2, plan.segmentSeconds.size)
+        assertEquals(3.9, plan.segmentSeconds[0], 1e-9)
+        assertEquals(0.5, plan.segmentSeconds[1], 1e-9)
+    }
+
+    private fun assertLimits(total: Double, segments: List<Double>, label: String) {
+        assertEquals(label, total, segments.sum(), 1e-6)
+        assertTrue("$label: 上限を超えた $segments", segments.all { it <= MAX_SEGMENT_SECONDS + 1e-9 })
+        if (total >= MIN_SEGMENT_SECONDS) {
+            assertTrue("$label: 短すぎる区間がある $segments", segments.all { it >= MIN_SEGMENT_SECONDS - 1e-9 })
+        }
+    }
+
+    @Test
     fun theStartTimeIsEnoughToNeverRunOut() {
         for (model in listOf(slowDevice, fastDevice)) {
             for (total in listOf(2.0, 6.0, 20.0, 40.0)) {

@@ -61,6 +61,7 @@ fun planSegments(
     maxSegmentSeconds: Double = MAX_SEGMENT_SECONDS,
     maxStartSeconds: Double = MAX_START_SECONDS,
 ): SegmentPlan {
+    require(maxSegmentSeconds >= 2 * minSegmentSeconds) { "maxSegmentSeconds must be at least twice minSegmentSeconds" }
     if (remainingSeconds <= EPSILON) return SegmentPlan(emptyList(), fixedStartSeconds ?: nowSeconds)
 
     fun build(startSeconds: Double): List<Double>? {
@@ -72,7 +73,11 @@ fun planSegments(
             // 間に合う最大の長さ: now + fixed + perSecond * length <= start + buffered
             var length = minOf((startSeconds + buffered - now - model.fixedSeconds) / model.secondsPerAudioSecond, maxSegmentSeconds)
             if (length < minSegmentSeconds && length < remaining) return null
-            if (remaining - length < minSegmentSeconds) length = remaining // 端数は最後の区間に含める
+            // 短すぎる端数は残さない。ただし、上限は超えない。残り全部が上限に収まるなら、全部を1区間にする。
+            // 収まらないなら、この区間を短くして、最低限の長さの端数を残す
+            if (remaining - length < minSegmentSeconds) {
+                length = if (remaining <= maxSegmentSeconds) remaining else remaining - minSegmentSeconds
+            }
             length = minOf(length, remaining)
             val doneAt = now + model.renderSeconds(length)
             if (doneAt > startSeconds + buffered + EPSILON) return null
@@ -100,12 +105,16 @@ fun planSegments(
     return SegmentPlan(evenSegments(remainingSeconds, minSegmentSeconds, maxSegmentSeconds), limit)
 }
 
-/** 最大の長さの区間で分ける（端数が短すぎるときは、最後の区間に含める） */
+/** 最大の長さの区間で分ける。短すぎる端数は残さないよう、その手前の区間を短くする（上限は超えない） */
 private fun evenSegments(remainingSeconds: Double, minSegmentSeconds: Double, maxSegmentSeconds: Double): List<Double> {
     val segments = ArrayList<Double>()
     var remaining = remainingSeconds
     while (remaining > EPSILON) {
-        val length = if (remaining - maxSegmentSeconds < minSegmentSeconds) remaining else maxSegmentSeconds
+        val length = when {
+            remaining <= maxSegmentSeconds -> remaining
+            remaining - maxSegmentSeconds < minSegmentSeconds -> remaining - minSegmentSeconds
+            else -> maxSegmentSeconds
+        }
         segments += length
         remaining -= length
     }
