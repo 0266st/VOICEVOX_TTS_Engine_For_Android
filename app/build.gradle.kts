@@ -66,7 +66,8 @@ tasks.register("downloadVoicevox") {
     val ortVersion = libs.versions.voicevoxOnnxruntime.get()
     val vvmVersion = libs.versions.voicevoxVvm.get()
     val downloadDir = layout.buildDirectory.dir("voicevox-downloads").get().asFile
-    val mavenLocalDir = File(System.getProperty("user.home"), ".m2/repository")
+    // mavenLocal() が実際に見る場所（maven.repo.local や settings.xml の設定に従う）。~/.m2/repository に固定しない
+    val mavenLocalDir = File(repositories.withType<MavenArtifactRepository>().getByName("MavenLocal").url)
     val jniLibsDir = file("src/main/jniLibs")
     val rawDir = file("src/main/res/raw")
 
