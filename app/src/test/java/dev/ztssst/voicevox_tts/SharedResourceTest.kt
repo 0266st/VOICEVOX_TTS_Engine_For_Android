@@ -237,5 +237,29 @@ class SharedResourceTest {
         assertSame(first, resource.refresh())
         assertEquals(listOf("engine1"), created)
     }
+
+    @Test(expected = IllegalStateException::class)
+    fun refreshWithoutAnyUserIsAnError() {
+        // 使う側が、すべて release したあとに refresh() すると、使う側のいない資源を作ってしまい、
+        // 解放のタイマーも無いので、誰も解放しない（Copilot の指摘した競合）。あってはならない呼び出しなので、エラーにする
+        val resource = newResource(failFirst = true)
+        resource.acquire()
+        resource.release()
+        resource.refresh()
+    }
+
+    @Test
+    fun aRefreshAfterTheIdleReleaseDoesNotCreateAnUnownedResource() {
+        val resource = newResource(failFirst = true)
+        resource.acquire()
+        resource.release()
+        scheduler.advance(1000) // 待ち時間のあとに、解放された（Future は手放された）
+        try {
+            resource.refresh()
+            throw AssertionError("IllegalStateException was expected")
+        } catch (_: IllegalStateException) {
+        }
+        assertEquals("作ってはいけない", listOf("engine1"), created)
+    }
 }
 

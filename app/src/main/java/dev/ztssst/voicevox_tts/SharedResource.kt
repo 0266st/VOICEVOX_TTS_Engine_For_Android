@@ -72,9 +72,14 @@ class SharedResource<T : Any>(
      *
      * すでに [acquire] している使う側が、初期化の失敗のあとで、もう一度試すためのもの（[acquire] を呼び直すと、
      * 使う側の数が増えてしまい、[release] が釣り合わなくなる）。失敗していなければ、いまの資源をそのまま返す。
+     *
+     * 使う側がいないときに呼んではいけない（[IllegalStateException]）。使う側のいない資源を作ると、
+     * 解放のタイマーも登録されないので、誰にも解放されず、残り続ける。呼ぶ側が、自分の [release] より前に
+     * 呼ぶことを、保証すること。
      */
     @Synchronized
     fun refresh(): Future<T> {
+        check(users > 0) { "refresh() was called without a user (already released)" }
         val current = future
         if (current == null || current.hasFailed()) future = create()
         return future!!

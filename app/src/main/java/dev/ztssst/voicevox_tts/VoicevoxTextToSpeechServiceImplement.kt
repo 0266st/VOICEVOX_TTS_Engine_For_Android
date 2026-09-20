@@ -19,6 +19,12 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     // しばらく生き残ることがある。そのあいだ、エンジンを掴み続けないよう、onDestroy で手放す
     @Volatile private var ttsEngine: Future<VoicevoxTTSEngine>? = null
 
+    // ttsEngine の作り直し（合成のスレッド）と、破棄（メインスレッド）を、直列にするためのロック。
+    // 作り直しは、破棄より前に終わるか、破棄のあとなら、何もしない（破棄のあとに作り直すと、使う側のいない
+    // エンジンが、誰にも解放されずに残る）
+    private val lifecycleLock = Any()
+    private var destroyed = false
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "OnCreate Started")
@@ -27,8 +33,11 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        ttsEngine = null
-        VoicevoxEngineProvider.release()
+        synchronized(lifecycleLock) {
+            destroyed = true
+            ttsEngine = null
+            VoicevoxEngineProvider.release()
+        }
         super.onDestroy()
     }
 
@@ -90,8 +99,11 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         } catch (e: ExecutionException) {
             Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
             // 失敗した Future を持ち続けると、このサービスが生きているあいだ、ずっと失敗し続ける。
-            // 次の要求のために、初期化をやり直す（使う側の数は変わらない）
-            ttsEngine = VoicevoxEngineProvider.refresh()
+            // 次の要求のために、初期化をやり直す（使う側の数は変わらない）。破棄のあとや、すでに別の要求が
+            // 作り直したあと（ttsEngine が、いま待った Future と違う）なら、何もしない
+            synchronized(lifecycleLock) {
+                if (!destroyed && ttsEngine === future) ttsEngine = VoicevoxEngineProvider.refresh()
+            }
             callback.error(TextToSpeech.ERROR_SERVICE)
             return
         }
