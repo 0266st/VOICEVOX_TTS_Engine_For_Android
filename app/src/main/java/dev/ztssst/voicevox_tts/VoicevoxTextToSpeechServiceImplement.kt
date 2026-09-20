@@ -9,13 +9,10 @@ import android.speech.tts.Voice
 import android.util.Log
 import jp.hiroshiba.voicevoxcore.exceptions.AnalyzeTextException
 import java.io.File
-import java.io.InputStream
 import java.util.Locale
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
 @Suppress("PrivatePropertyName")
 class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
@@ -54,25 +51,9 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         }
         val dictDir = File(filesDir, "open_jtalk_dict")
         dictDir.deleteRecursively()
-        resources.openRawResource(R.raw.open_jtalk_dict).use { unzip(it, filesDir) }
+        resources.openRawResource(R.raw.open_jtalk_dict).use { unzipSafely(it, filesDir) }
         stamp.writeText(installed)
         Log.d(TAG, "resources copied to $filesDir")
-    }
-
-    private fun unzip(input: InputStream, destDir: File) {
-        ZipInputStream(input).use { zipInputStream ->
-            var zipEntry: ZipEntry? = zipInputStream.nextEntry
-            while (zipEntry != null) {
-                val newFile = File(destDir, zipEntry.name)
-                if (zipEntry.isDirectory) {
-                    newFile.mkdirs()
-                } else {
-                    newFile.parentFile?.mkdirs()
-                    newFile.outputStream().use { zipInputStream.copyTo(it) }
-                }
-                zipEntry = zipInputStream.nextEntry
-            }
-        }
     }
 
     override fun onIsLanguageAvailable(lang: String, country: String, variant: String): Int {
@@ -119,6 +100,12 @@ class VoicevoxTextToSpeechServiceImplement : TextToSpeechService() {
         Log.d("${TAG}->onSynthesizeText", "request.charSequenceText = ${request.charSequenceText}")
         val engine = try {
             ttsEngine.get()
+        } catch (e: InterruptedException) {
+            // 初期化を待っているあいだに、合成のスレッドが止められた。割り込みの印を戻して、エラーを返す
+            Thread.currentThread().interrupt()
+            Log.w("${TAG}->onSynthesizeText", "interrupted while waiting for initialization")
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            return
         } catch (e: ExecutionException) {
             Log.e("${TAG}->onSynthesizeText", "initialization failed", e.cause)
             callback.error(TextToSpeech.ERROR_SERVICE)
