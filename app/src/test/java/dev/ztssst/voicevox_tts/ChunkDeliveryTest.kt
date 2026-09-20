@@ -140,4 +140,39 @@ class ChunkDeliveryTest {
         t.onCancel { count.incrementAndGet() }
         assertEquals(1, count.get())
     }
+
+    @Test(timeout = 120_000)
+    fun theCancelActionRunsExactlyOnceEvenWhenRegistrationRacesWithCancel() {
+        // onCancel（登録）と cancel（止める）が、別のスレッドから、ほぼ同時に来ても、登録した処理は、ちょうど1回だけ動く。
+        // 登録のあと、止められたかの確認までのあいだに cancel が入ると、2回動いていた（Copilot の指摘した競合）。
+        // 窓が数ナノ秒しかないので、2つのスレッドを、スピンで同時に走らせて、繰り返す
+        val iterations = 300_000
+        val tokens = arrayOfNulls<CancellationToken>(iterations)
+        val counts = Array(iterations) { AtomicInteger(0) }
+        val ready = AtomicInteger(0) // 2つのスレッドが、i 番目の準備を終えた数
+        val go = java.util.concurrent.atomic.AtomicIntegerArray(iterations)
+        for (i in 0 until iterations) tokens[i] = CancellationToken()
+
+        fun runner(work: (Int) -> Unit) = Thread {
+            for (i in 0 until iterations) {
+                ready.incrementAndGet()
+                while (go.get(i) == 0) Thread.onSpinWait()
+                work(i)
+            }
+        }
+        val canceller = runner { i -> tokens[i]!!.cancel() }
+        val registrar = runner { i -> tokens[i]!!.onCancel { counts[i].incrementAndGet() } }
+        canceller.start(); registrar.start()
+        for (i in 0 until iterations) {
+            while (ready.get() < 2 * (i + 1)) Thread.onSpinWait()
+            go.set(i, 1)
+        }
+        canceller.join(); registrar.join()
+
+        val doubleCalls = counts.count { it.get() > 1 }
+        val noCalls = counts.count { it.get() == 0 }
+        assertEquals("2回以上動いた（$iterations 回中）", 0, doubleCalls)
+        assertEquals("1回も動かなかった（止められたのに、登録した処理が呼ばれない）", 0, noCalls)
+    }
 }
+

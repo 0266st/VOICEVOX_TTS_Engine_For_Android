@@ -25,24 +25,34 @@ sealed interface DeliveryEvent {
 
 /**
  * 進行中の合成を、別のスレッド（`onStop()`）から止めるための目印。1回の合成につき1つ作る。
+ *
+ * 登録した処理（[onCancel]）は、止められたときに、**ちょうど1回だけ**動く。登録と [cancel] が、別のスレッドから
+ * ほぼ同時に来ても、2回動いたり、1回も動かなかったりしない（状態の確認と、処理の取り出しを、同じロックの中で行う）。
  */
 class CancellationToken {
-    private val cancelled = AtomicBoolean(false)
-
-    @Volatile
+    private val lock = Any()
+    private var cancelled = false
     private var listener: (() -> Unit)? = null
 
-    val isCancelled: Boolean get() = cancelled.get()
+    val isCancelled: Boolean get() = synchronized(lock) { cancelled }
 
     /** 止める。どのスレッドからでも呼べる。2回目以降は、何もしない */
     fun cancel() {
-        if (cancelled.compareAndSet(false, true)) listener?.invoke()
+        val action = synchronized(lock) {
+            if (cancelled) return
+            cancelled = true
+            listener.also { listener = null } // 取り出して空にするので、この処理は、ここでしか動かない
+        }
+        action?.invoke() // ロックの外で呼ぶ（処理の中で、別のロックを取っても、詰まらない）
     }
 
-    /** 止められたときに呼ぶ処理を登録する（1つだけ）。すでに止められていれば、すぐ呼ぶ */
+    /** 止められたときに呼ぶ処理を登録する（1つだけ。あとから登録すると、置き換える）。すでに止められていれば、すぐ呼ぶ */
     fun onCancel(action: () -> Unit) {
-        listener = action
-        if (isCancelled) action()
+        val alreadyCancelled = synchronized(lock) {
+            if (!cancelled) listener = action
+            cancelled
+        }
+        if (alreadyCancelled) action()
     }
 }
 

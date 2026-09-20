@@ -7,6 +7,7 @@ import jp.hiroshiba.voicevoxcore.blocking.Onnxruntime
 import jp.hiroshiba.voicevoxcore.blocking.OpenJtalk
 import jp.hiroshiba.voicevoxcore.blocking.Synthesizer
 import jp.hiroshiba.voicevoxcore.blocking.VoiceModelFile
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -38,6 +39,12 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String) : Aut
     // 端末の合成の速さ。発話をまたいで覚えておく
     private val costEstimator = CostEstimator()
 
+    // 進行中の合成。close() が、これを止める（サービスの破棄で、フレームワークが onStop() を呼ぶことに頼らない）
+    private val activeSyntheses = ConcurrentHashMap.newKeySet<CancellationToken>()
+
+    @Volatile
+    private var closed = false
+
     /**
      * 音声合成をしながら、できた分から16-bit PCM（24kHz, モノラル）を [onChunk] に渡す。
      *
@@ -60,9 +67,12 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String) : Aut
         token: CancellationToken = CancellationToken(),
         onChunk: (ByteArray) -> Boolean,
     ): Boolean {
+        check(!closed) { "The engine is closed" }
         val queue = LinkedBlockingQueue<DeliveryEvent>()
         val firstDeliveredAt = AtomicLong(0) // 渡し始めた時刻。合成のほうが、区間の分け方を決めるのに使う
         token.onCancel { queue.offer(DeliveryEvent.Cancelled) } // 渡し始めるのを待っているあいだも、止められるように
+        activeSyntheses += token
+        if (closed) token.cancel() // 登録の直前に、close() が終わっていたときの取りこぼしを防ぐ
         renderExecutor.execute {
             try {
                 renderSegments(text, styleId, token, firstDeliveredAt, queue)
@@ -79,13 +89,32 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String) : Aut
             if (!completed) Log.d("${TAG}->Synthesizer", "Synthesis cancelled")
             return completed
         } finally {
+            activeSyntheses -= token
             token.cancel() // 打ち切ったときや失敗したときに、合成のほうも止める
         }
     }
 
-    /** 合成用のスレッドを止める。使い終わったエンジンは、これを呼んでから手放す（ネイティブの資源は、GC のときに解放される） */
+    /**
+     * エンジンを閉じる。進行中の合成をすべて止めて、合成用のスレッドが終わるまで待つ（最大 [CLOSE_TIMEOUT_SECONDS] 秒）。
+     * 使い終わったエンジンは、これを呼んでから手放す（ネイティブの資源は、GC のときに解放される）。
+     *
+     * 進行中の合成は、区間の切れ目で止まる。CORE には、進行中の `render` を中断する手段がないので、
+     * 実行中の1区間（最大4秒ぶん）が終わるまでは、スレッドが残る。それを待つので、呼び出しは、その間、戻らない
+     * （バックグラウンドのスレッドから呼ぶこと）。閉じたエンジンでは、合成を始められない。
+     */
     override fun close() {
+        closed = true
+        activeSyntheses.forEach { it.cancel() }
         renderExecutor.shutdown()
+        val startedAt = SystemClock.elapsedRealtime()
+        val terminated = try {
+            renderExecutor.awaitTermination(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!terminated) renderExecutor.shutdownNow()
+        Log.d(TAG, "Engine closed (terminated = $terminated, waited ${SystemClock.elapsedRealtime() - startedAt}ms)")
     }
 
     /**
@@ -161,5 +190,6 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String) : Aut
         const val SAMPLE_RATE = 24000
         const val DEFAULT_STYLE_ID = 14 // 冥鳴ひまり（ノーマル）
         private const val RENDER_THREAD_IDLE_SECONDS = 30L
+        private const val CLOSE_TIMEOUT_SECONDS = 10L
     }
 }
