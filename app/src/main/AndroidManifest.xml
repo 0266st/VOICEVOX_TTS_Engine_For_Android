@@ -35,9 +35,7 @@
         </service>
         <activity
             android:name=".MainActivity"
-            android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay" >
-        </activity>
+            android:exported="true" />
 
         <activity
             android:name=".CheckVoiceData"

@@ -1,1 +1,5 @@
 /build
+
+# downloadVoicevox タスクで取得するファイル
+/src/main/jniLibs/
+/src/main/res/raw/model.vvm

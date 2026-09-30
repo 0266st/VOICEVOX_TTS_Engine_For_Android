@@ -10,8 +10,9 @@ lifecycleRuntimeKtx = "2.6.1"
 activityCompose = "1.8.0"
 composeBom = "2024.09.00"
 media3CommonKtx = "1.5.1"
-onnxruntimeAndroid = "1.14.0"
-voicevox = "0.15.0-preview.16"
+voicevox = "0.17.0"
+voicevoxOnnxruntime = "1.23.2"
+voicevoxVvm = "0.17.0"
 
 
 [libraries]
@@ -31,7 +32,6 @@ androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-man
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-media3-common-ktx = { group = "androidx.media3", name = "media3-common-ktx", version.ref = "media3CommonKtx" }
-onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntimeAndroid" }
 voicevox-core = { group = "jp.hiroshiba.voicevoxcore", name = "voicevoxcore-android", version.ref = "voicevox" }
 
 [plugins]
