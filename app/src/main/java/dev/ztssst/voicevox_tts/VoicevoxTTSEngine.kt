@@ -8,7 +8,7 @@ import jp.hiroshiba.voicevoxcore.VoiceModel
 class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String){
     private val synthesizer: Synthesizer
     @Suppress("PrivatePropertyName")
-    private val TAG = "VoicevoxTTSService"
+    private val TAG = "VoicevoxTTSEngine"
 
     init {
         val model = VoiceModel(voiceModelPath)
@@ -16,7 +16,7 @@ class VoicevoxTTSEngine(voiceModelPath: String, openJtalkDictPath: String){
         val synthesizer = Synthesizer.builder(jtalk).build()
         synthesizer.loadVoiceModel(model)
         this.synthesizer = synthesizer
-        Log.d(TAG, "VoicevoxTTSService Initialized")
+        Log.d(TAG, "VoicevoxTTSEngine Initialized")
     }
 
     fun synthesis(text: String, speakerId: Int = 14): ByteArray{ // 冥鳴ひまりでやるので、defaultのstyleIdは14
